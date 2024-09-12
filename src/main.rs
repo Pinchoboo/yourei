@@ -1,7 +1,7 @@
 use clap::Parser;
 use regex::Regex;
 use scraper::{Html, Selector};
-use std::{fmt::Display, io::Read};
+use std::{fmt::Display};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -9,11 +9,11 @@ struct Cli {
     /// Word to search examples for
     word: String,
     /// Number of examples to return (default = 1)
-    #[arg(short, long)]
-    number: Option<u64>,
+    #[arg(short, long, default_value = "1")]
+    number: u64,
     /// Number of examples to skip from the example list before returning the next <NUMBER> of examples
-    #[arg(short, long)]
-    offset: Option<u64>,
+    #[arg(short, long, default_value = "0")]
+    offset: u64,
     /// Show underlined furigana where furigana is used in the source text
     #[arg(short, long)]
     furigana: bool,
@@ -27,18 +27,14 @@ fn main() {
     let url = format!(
         "https://yourei.jp/{}?n={}&start={}",
         cli.word,
-        cli.number.unwrap_or(1),
-        cli.offset.unwrap_or(0) + 1
+        cli.number,
+        cli.offset + 1
     );
 
-    let mut page_content = String::new();
-    reqwest::blocking::get(url)
-        .unwrap()
-        .read_to_string(&mut page_content)
-        .unwrap();
+    let page_content = reqwest::blocking::get(&url).unwrap().text().unwrap();
 
-    for e in extract_examples(&page_content, cli) {
-        println!("{e}\n");
+    for example in extract_examples(&page_content, &cli) {
+        println!("{example}\n");
     }
 }
 
@@ -55,9 +51,9 @@ impl Display for Example {
         write!(
             f,
             "{}{}{}",
-            &self.prev.as_deref().unwrap_or_default(),
-            &self.sentence.as_deref().unwrap_or_default(),
-            &self.next.as_deref().unwrap_or_default()
+            self.prev.as_deref().unwrap_or_default(),
+            self.sentence.as_deref().unwrap_or_default(),
+            self.next.as_deref().unwrap_or_default()
         )?;
         if let Some(source) = &self.source {
             write!(f, "\n{source}")?;
@@ -71,20 +67,20 @@ const NOLINE: &str = "\x1b[24m";
 const GREEN: &str = "\x1b[32m";
 const RESET: &str = "\x1b[0m";
 
-fn extract_examples(html_content: &str, cli: Cli) -> Vec<Example> {
-    let rt_regex = Regex::new(r"<rt>(?<reading>.*?)<\/rt>").unwrap();
+fn extract_examples(html_content: &str, cli: &Cli) -> Vec<Example> {
+    let rt_regex = Regex::new(r"<rt>(?<reading>.*?)</rt>").unwrap();
     let word_regex = word_regex(&cli.word);
     let kanji_only_regex = kanji_only_regex(&cli.word);
 
     let reading_format = if cli.furigana {
         format!("{UNDERLINE}$reading{NOLINE}")
     } else {
-        "".to_string()
+        String::new()
     };
     let word_in_green = format!("{GREEN}$word{RESET}");
 
-    let html_to_ansi = |mut s: String| {
-        s = s.replace("<ruby>", "").replace("</ruby>", "");
+    let html_to_ansi = |s: String| {
+        let s = s.replace("<ruby>", "").replace("</ruby>", "");
         let s = rt_regex.replace_all(&s, &reading_format);
         if cli.emphasize {
             if word_regex.is_match(&s) {
@@ -95,7 +91,7 @@ fn extract_examples(html_content: &str, cli: Cli) -> Vec<Example> {
         } else {
             s
         }
-        .to_string()
+        .into_owned()
     };
 
     Html::parse_document(html_content)
@@ -118,31 +114,24 @@ fn extract_examples(html_content: &str, cli: Cli) -> Vec<Example> {
 }
 
 fn word_regex(word: &str) -> Regex {
-    Regex::new(
-        &(word.chars().fold(r"(?<word>".to_string(), |acc, c| {
-            format!(
-                r"{acc}{c}({})?",
-                format!("{UNDERLINE}.*?{NOLINE}").replace('[', "\\[")
-            )
-        }) + ")"),
-    )
-    .unwrap()
+    let pattern = word.chars().fold(String::from("(?<word>"), |acc, c| {
+        format!(
+            r"{acc}{c}({})?",
+            format!("{UNDERLINE}.*?{NOLINE}").replace('[', r"\[")
+        )
+    }) + ")";
+    Regex::new(&pattern).unwrap()
 }
 
 fn kanji_only_regex(word: &str) -> Regex {
-    Regex::new(
-        &(Regex::new(r"(\p{Script=Katakana}|\p{Script=Hiragana})")
-            .unwrap()
-            .replace_all(word, "")
-            .chars()
-            .fold("(?<word>".to_string(), |acc, c| {
-                format!(
-                    r"{acc}{c}({})?({})?",
-                    r"(\p{Script=Katakana}|\p{Script=Hiragana})*?",
-                    format!("{UNDERLINE}.*?{NOLINE}").replace('[', "\\[")
-                )
-            })
-            + ")"),
-    )
-    .unwrap()
+    let kana_regex = Regex::new(r"(\p{Script=Katakana}|\p{Script=Hiragana})").unwrap();
+    let kanji_only = kana_regex.replace_all(word, "");
+    let pattern = kanji_only.chars().fold(String::from("(?<word>"), |acc, c| {
+        format!(
+            r"{acc}{c}({})?({})?",
+            r"(\p{Script=Katakana}|\p{Script=Hiragana})*?",
+            format!("{UNDERLINE}.*?{NOLINE}").replace('[', r"\[")
+        )
+    }) + ")";
+    Regex::new(&pattern).unwrap()
 }
